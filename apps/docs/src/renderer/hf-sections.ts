@@ -152,16 +152,18 @@ export function withHfPictureEdits(
   const out = images.map((img): HfImage => {
     const edit = img.drawing == null ? undefined : edits[img.drawing]
     if (!edit) return img
-    const { posH: _h, posV: _v, anchorPara: _a, ...rest } = img
-    return {
-      ...rest,
-      posXPx: edit.posXPx,
-      posYPx: edit.posYPx,
-      posHRel: 'page',
-      posVRel: 'page',
-      widthPx: edit.widthPx,
-      heightPx: edit.heightPx,
+    // an axis the picture moved along is pinned to the page; the other keeps
+    // its base (an aligned picture realigns at its new size, as in Word)
+    let next: HfImage = { ...img, widthPx: edit.widthPx, heightPx: edit.heightPx }
+    if (edit.posXPx != null) {
+      const { posH: _h, ...rest } = next
+      next = { ...rest, posXPx: edit.posXPx, posHRel: 'page' }
     }
+    if (edit.posYPx != null) {
+      const { posV: _v, anchorPara: _a, ...rest } = next
+      next = { ...rest, posYPx: edit.posYPx, posVRel: 'page' }
+    }
+    return next
   })
   memo.set(images, out)
   return out
@@ -292,10 +294,17 @@ export function withHfPictureEdit(
   const cur =
     state.edits[target.key] ??
     (Object.values(state.edits).includes(resolved) ? resolved : { ...resolved, pictureOnly: true })
+  // a resize after a move keeps the move: an axis the edit leaves out stays as it was
+  const prev = cur.pictureEdits?.[drawing]
+  const merged: HfPictureEdit = { widthPx: edit.widthPx, heightPx: edit.heightPx }
+  const x = edit.posXPx ?? prev?.posXPx
+  const y = edit.posYPx ?? prev?.posYPx
+  if (x != null) merged.posXPx = x
+  if (y != null) merged.posYPx = y
   return {
     edits: {
       ...state.edits,
-      [target.key]: { ...cur, pictureEdits: { ...cur.pictureEdits, [drawing]: edit } },
+      [target.key]: { ...cur, pictureEdits: { ...cur.pictureEdits, [drawing]: merged } },
     },
     links: state.links,
   }

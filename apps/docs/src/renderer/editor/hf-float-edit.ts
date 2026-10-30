@@ -15,6 +15,9 @@ export interface HfFloatTarget {
   drawing: number
 }
 
+/** a picture's box in the strip: page-relative top-left plus size, CSS px */
+type HfBox = Required<HfPictureEdit>
+
 type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
 const HANDLES: readonly Handle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
 const DRAG_THRESHOLD_PX = 3
@@ -50,8 +53,8 @@ function zoomOf(el: Element): number {
   return zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
 }
 
-/** the box an edit starts from: page-relative top-left plus size, CSS px */
-function boxOf(el: HTMLElement): HfPictureEdit | null {
+/** the box the element is laid out at (makeHfFloatImgEl) */
+function boxOf(el: HTMLElement): HfBox | null {
   const x = Number(el.dataset.pageX)
   const y = Number(el.dataset.pageY)
   const w = Number(el.dataset.boxW) || el.offsetWidth
@@ -71,15 +74,23 @@ export function installHfFloatEdit(opts: {
   editable: () => boolean
   /** open header editing on page `pageIdx` */
   open: (pageIdx: number) => void
-  commit: (target: HfFloatTarget, edit: HfPictureEdit) => void
+  /** false when the edit could not be taken (the strip has no target) */
+  commit: (target: HfFloatTarget, edit: HfPictureEdit) => boolean
 }): () => void {
   const { root } = opts
   let selected: HfFloatTarget | null = null
+  /** a double-click from the body asked for header editing: the selection waits for it */
+  let awaitingOpen = false
   let frame: HTMLDivElement | null = null
   let raf = 0
   let swallowDblClick = false
-  /** when a double-click asked for header editing: the selection waits for it to open */
-  let openedAt = 0
+  /** a committed edit drawn on its element until pagination replaces the element */
+  let shown: {
+    el: HTMLElement
+    target: HfFloatTarget
+    box: HfBox
+    restore: () => void
+  } | null = null
 
   const floats = () => Array.from(root.querySelectorAll<HTMLElement>('.page-hf-float-img'))
   /** the picture under the point; in-front pictures beat behind-text ones, later ones earlier ones */
@@ -88,7 +99,7 @@ export function installHfFloatEdit(opts: {
     let bestFront = false
     for (const el of floats()) {
       if (!targetOf(el)) continue
-      const front = el.style.zIndex === '1'
+      const front = el.dataset.hfBehind == null
       if (!front && !includeBehind) continue
       const r = el.getBoundingClientRect()
       if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue
@@ -103,6 +114,38 @@ export function installHfFloatEdit(opts: {
     root.querySelector<HTMLElement>(
       `.page-hf-float-img[data-hf-page-idx="${t.pageIdx}"][data-hf-drawing="${t.drawing}"]`,
     )
+
+  // the frame follows its picture through scrolling, zoom, layout and the
+  // pagination pass that rebuilds the layer, re-placed once per frame at most
+  const schedule = () => {
+    if (!raf) raf = requestAnimationFrame(place)
+  }
+  let mutations: MutationObserver | null = null
+  let resizes: ResizeObserver | null = null
+  const watch = () => {
+    const want = selected != null || shown != null
+    if (want === (mutations != null)) return
+    if (want) {
+      // class: header editing opening / closing; style: zoom, previews, re-placed layers
+      mutations = new MutationObserver(schedule)
+      mutations.observe(root, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+      })
+      resizes = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+      resizes?.observe(root)
+      root.addEventListener('scroll', schedule, true)
+      window.addEventListener('resize', schedule)
+    } else {
+      mutations?.disconnect()
+      resizes?.disconnect()
+      mutations = resizes = null
+      root.removeEventListener('scroll', schedule, true)
+      window.removeEventListener('resize', schedule)
+    }
+  }
 
   const frameEl = (): HTMLDivElement => {
     if (frame) return frame
@@ -121,12 +164,20 @@ export function installHfFloatEdit(opts: {
   }
   const place = () => {
     raf = 0
-    if (selected && !opts.editing() && performance.now() - openedAt > 1000) selected = null
-    const el = selected ? elOf(selected) : null
+    // pagination swapped in the re-placed element: the old one took the preview along
+    if (shown && (!shown.el.isConnected || elOf(shown.target) !== shown.el)) {
+      if (shown.el.isConnected) shown.restore()
+      shown = null
+    }
+    if (selected) {
+      if (opts.editing()) awaitingOpen = false
+      else if (!awaitingOpen) selected = null
+    }
+    watch()
+    const el = selected && !awaitingOpen ? elOf(selected) : null
     const rect = el?.getBoundingClientRect()
     if (!rect || !(rect.width > 0) || !(rect.height > 0)) {
       if (frame) frame.hidden = true
-      if (selected) raf = requestAnimationFrame(place)
       return
     }
     const box = frameEl()
@@ -141,15 +192,15 @@ export function installHfFloatEdit(opts: {
       const r = handle.getBoundingClientRect()
       const cx = r.left + r.width / 2
       const cy = r.top + r.height / 2
-      const shown = cx >= port.left && cx <= port.right && cy >= port.top && cy <= port.bottom
-      handle.style.visibility = shown ? '' : 'hidden'
+      const visible = cx >= port.left && cx <= port.right && cy >= port.top && cy <= port.bottom
+      handle.style.visibility = visible ? '' : 'hidden'
     }
-    // pagination rebuilds the layer after a commit: keep following it
-    raf = requestAnimationFrame(place)
   }
   const select = (t: HfFloatTarget | null) => {
     selected = t
-    if (!raf) raf = requestAnimationFrame(place)
+    if (!t) awaitingOpen = false
+    watch()
+    schedule()
   }
 
   /** drag (move or resize) with a live preview on the element itself */
@@ -157,62 +208,74 @@ export function installHfFloatEdit(opts: {
     e: MouseEvent,
     el: HTMLElement,
     target: HfFloatTarget,
-    next: (dx: number, dy: number) => HfPictureEdit | null,
-    preview: (edit: HfPictureEdit, start: HfPictureEdit) => void,
+    next: (start: HfBox, dx: number, dy: number) => HfBox,
     threshold: number,
   ) => {
-    const start = boxOf(el)
-    if (!start) return
+    // where the element is laid out, and where the picture shows: an edit
+    // committed a moment ago is still a preview until the pass re-places it
+    const laid = boxOf(el)
+    if (!laid) return
+    const pending = shown?.el === el ? shown : null
+    const start = pending?.box ?? laid
     const zoom = zoomOf(el)
     const x0 = e.clientX
     const y0 = e.clientY
     let active = threshold === 0
-    const prior = {
-      translate: el.style.translate,
-      width: el.style.width,
-      height: el.style.height,
+    const prior = { translate: el.style.translate, width: el.style.width, height: el.style.height }
+    const restore =
+      pending?.restore ??
+      (() => {
+        el.style.translate = prior.translate
+        el.style.width = prior.width
+        el.style.height = prior.height
+      })
+    if (pending) shown = null
+    const draw = (box: HfBox) => {
+      el.style.width = `${box.widthPx}px`
+      el.style.height = `${box.heightPx}px`
+      el.style.translate = `${box.posXPx - laid.posXPx}px ${box.posYPx - laid.posYPx}px`
     }
-    const restore = () => {
-      el.style.translate = prior.translate
-      el.style.width = prior.width
-      el.style.height = prior.height
-      document.body.classList.remove('docs-run-pic-dragging')
-    }
-    const editAt = (ev: MouseEvent) => next((ev.clientX - x0) / zoom, (ev.clientY - y0) / zoom)
+    const editAt = (ev: MouseEvent) =>
+      next(start, (ev.clientX - x0) / zoom, (ev.clientY - y0) / zoom)
     const onMove = (ev: MouseEvent) => {
       if (!active) {
         if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < threshold) return
         active = true
       }
       document.body.classList.add('docs-run-pic-dragging')
-      const edit = editAt(ev)
-      if (edit) preview(edit, start)
+      draw(editAt(ev))
     }
     const onUp = (ev: MouseEvent) => {
       window.removeEventListener('mousemove', onMove, true)
       window.removeEventListener('mouseup', onUp, true)
-      const edit = active ? editAt(ev) : null
-      const moved =
-        edit &&
-        (Math.abs(edit.posXPx - start.posXPx) >= 0.5 ||
-          Math.abs(edit.posYPx - start.posYPx) >= 0.5 ||
-          Math.abs(edit.widthPx - start.widthPx) >= 0.5 ||
-          Math.abs(edit.heightPx - start.heightPx) >= 0.5)
       document.body.classList.remove('docs-run-pic-dragging')
-      if (!moved) {
+      const box = active ? editAt(ev) : null
+      const movedX = box != null && Math.abs(box.posXPx - start.posXPx) >= 0.5
+      const movedY = box != null && Math.abs(box.posYPx - start.posYPx) >= 0.5
+      const resized =
+        box != null &&
+        (Math.abs(box.widthPx - start.widthPx) >= 0.5 ||
+          Math.abs(box.heightPx - start.heightPx) >= 0.5)
+      if (!box || !(movedX || movedY || resized)) {
+        if (pending) shown = pending
+        else restore()
+        return
+      }
+      // only the axes the corner moved along: a resize from the far edge
+      // leaves the picture's own position (base and offset) alone
+      const edit: HfPictureEdit = {
+        widthPx: Math.max(1, Math.round(box.widthPx)),
+        heightPx: Math.max(1, Math.round(box.heightPx)),
+      }
+      if (movedX) edit.posXPx = round1(box.posXPx)
+      if (movedY) edit.posYPx = round1(box.posYPx)
+      if (!opts.commit(target, edit)) {
         restore()
         return
       }
       // the preview stays until pagination swaps in the re-placed element
-      opts.commit(target, {
-        posXPx: round1(edit.posXPx),
-        posYPx: round1(edit.posYPx),
-        widthPx: Math.max(1, Math.round(edit.widthPx)),
-        heightPx: Math.max(1, Math.round(edit.heightPx)),
-      })
-      window.setTimeout(() => {
-        if (el.isConnected) restore()
-      }, 1500)
+      shown = { el, target, box, restore }
+      watch()
     }
     window.addEventListener('mousemove', onMove, true)
     window.addEventListener('mouseup', onUp, true)
@@ -223,13 +286,7 @@ export function installHfFloatEdit(opts: {
       e,
       el,
       target,
-      (dx, dy) => {
-        const s = boxOf(el)
-        return s ? { ...s, posXPx: s.posXPx + dx, posYPx: s.posYPx + dy } : null
-      },
-      (edit, start) => {
-        el.style.translate = `${edit.posXPx - start.posXPx}px ${edit.posYPx - start.posYPx}px`
-      },
+      (s, dx, dy) => ({ ...s, posXPx: s.posXPx + dx, posYPx: s.posYPx + dy }),
       DRAG_THRESHOLD_PX,
     )
 
@@ -250,9 +307,7 @@ export function installHfFloatEdit(opts: {
       e,
       el,
       selected,
-      (dx, dy) => {
-        const s = boxOf(el)
-        if (!s) return null
+      (s, dx, dy) => {
         let w = s.widthPx
         let h = s.heightPx
         if ((west || east) && (north || south)) {
@@ -272,11 +327,6 @@ export function installHfFloatEdit(opts: {
           heightPx: h,
         }
       },
-      (edit, start) => {
-        el.style.width = `${edit.widthPx}px`
-        el.style.height = `${edit.heightPx}px`
-        el.style.translate = `${edit.posXPx - start.posXPx}px ${edit.posYPx - start.posYPx}px`
-      },
       0,
     )
   }
@@ -286,7 +336,11 @@ export function installHfFloatEdit(opts: {
     const editing = opts.editing()
     // from the body only a double-click reaches a header picture, and only one
     // drawn in front of the text: a behind-text one leaves the word under it to the body
-    if (!editing && e.detail < 2) return
+    if (!editing && e.detail < 2) {
+      // a click elsewhere drops a selection still waiting for header editing
+      if (awaitingOpen) select(null)
+      return
+    }
     const el = hitAt(e.clientX, e.clientY, editing)
     const target = el ? targetOf(el) : null
     if (!el || !target) {
@@ -298,9 +352,9 @@ export function installHfFloatEdit(opts: {
     e.stopPropagation()
     if (!editing) {
       swallowDblClick = true
-      openedAt = performance.now()
-      opts.open(target.pageIdx)
+      awaitingOpen = true
       select(target)
+      opts.open(target.pageIdx)
       return
     }
     select(target)
@@ -327,6 +381,9 @@ export function installHfFloatEdit(opts: {
   window.addEventListener('keydown', onKey, true)
   return () => {
     cancelAnimationFrame(raf)
+    selected = null
+    shown = null
+    watch()
     root.removeEventListener('mousedown', onMouseDown, true)
     root.removeEventListener('dblclick', onDblClick, true)
     root.removeEventListener('mousemove', onHover)

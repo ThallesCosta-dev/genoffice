@@ -1279,7 +1279,9 @@ export function makeHfFloatImgEl(img: HfImage, box: HfFloatBox, host: 'gap' | 'l
     el = hfImgNode(img)
   }
   el.className = 'page-hf-float-img'
-  if (!img.behind) el.style.zIndex = '1'
+  // behind text: below the body, and picked only in header editing (hf-float-edit)
+  if (img.behind) el.dataset.hfBehind = 'true'
+  else el.style.zIndex = '1'
   // a crop wrapper carries an inline position:relative for the strip hosts;
   // the float path must stay absolute (inline style beats the class)
   el.style.position = 'absolute'

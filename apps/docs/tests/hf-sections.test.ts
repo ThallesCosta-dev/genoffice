@@ -390,4 +390,50 @@ describe('floating header pictures moved in the strip', () => {
     expect(next.pictureOnly).toBeUndefined()
     expect(next.pictureEdits).toEqual({ 0: box })
   })
+
+  it('a resize from the far edge keeps the picture on its own bases', () => {
+    const s = withBanner()
+    Object.assign(
+      s,
+      withHfPictureEdit(s, 0, 'header', 'default', 0, { widthPx: 610, heightPx: 152 }),
+    )
+    const [resized] = resolveHf(s, 0, 'header', 'default').images!
+    expect(resized).toMatchObject({
+      posXPx: 2,
+      posYPx: 2,
+      posHRel: 'margin',
+      posVRel: 'paragraph',
+      widthPx: 610,
+      heightPx: 152,
+    })
+  })
+
+  it('a move along one axis pins only that axis; an aligned axis stays aligned', () => {
+    const s = withBanner()
+    s.parsed!.hfParts!.rH1!.images![0] = {
+      ...banner,
+      posXPx: undefined,
+      posH: 'center',
+      anchorPara: 0,
+    }
+    Object.assign(
+      s,
+      withHfPictureEdit(s, 0, 'header', 'default', 0, { posYPx: 30, widthPx: 600, heightPx: 150 }),
+    )
+    const [moved] = resolveHf(s, 0, 'header', 'default').images!
+    expect(moved).toMatchObject({ posH: 'center', posHRel: 'margin', posYPx: 30, posVRel: 'page' })
+    expect(moved.anchorPara).toBeUndefined()
+  })
+
+  it('a resize after a move keeps the move', () => {
+    const s = withBanner()
+    Object.assign(s, withHfPictureEdit(s, 0, 'header', 'default', 0, box))
+    Object.assign(
+      s,
+      withHfPictureEdit(s, 0, 'header', 'default', 0, { widthPx: 520, heightPx: 130 }),
+    )
+    expect(s.edits[editKey(10, 'header', 'default')].pictureEdits).toEqual({
+      0: { posXPx: 120, posYPx: 40, widthPx: 520, heightPx: 130 },
+    })
+  })
 })

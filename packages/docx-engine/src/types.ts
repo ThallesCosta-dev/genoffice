@@ -919,10 +919,12 @@ export interface HeaderFooter {
   pictureOnly?: boolean
 }
 
-/** a floating header/footer picture's new box, page-relative px (top-left corner) */
+/** a floating header/footer picture's new box: its top-left corner page-relative
+ *  px on each axis it moved along; an axis left out keeps its own base and
+ *  offset (a resize from the far edge) */
 export interface HfPictureEdit {
-  posXPx: number
-  posYPx: number
+  posXPx?: number
+  posYPx?: number
   widthPx: number
   heightPx: number
 }

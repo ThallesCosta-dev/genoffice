@@ -1,7 +1,7 @@
 /**
  * A floating header picture moved or resized in the strip: the save rewrites
- * only that drawing's position (pinned to the page) and extents, and a
- * picture-only edit keeps the part's text paragraphs byte for byte.
+ * only that drawing's extents and the axes it moved along (pinned to the
+ * page), and a picture-only edit keeps the part's text paragraphs byte for byte.
  */
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
@@ -42,7 +42,9 @@ const HEADER_RELS =
   '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>' +
   '</Relationships>'
 
-const buildBannerDocx = () =>
+const WPS_NS = 'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"'
+
+const buildBannerDocx = (headerXml = HEADER_XML) =>
   buildDocx({
     bodyXml: '<w:p><w:r><w:t>Body</w:t></w:r></w:p>',
     withImage: true,
@@ -52,7 +54,7 @@ const buildBannerDocx = () =>
     extraParts: [
       {
         path: 'word/header1.xml',
-        xml: HEADER_XML,
+        xml: headerXml,
         contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml',
       },
       {
@@ -113,6 +115,66 @@ describe('moving and resizing a floating header picture', () => {
       widthPx: 100,
       heightPx: 50,
     })
+  })
+
+  it('a resize from the far edge keeps the position base and offset', () => {
+    const out = patchHfPicturesXml(HEADER_XML, { 0: { widthPx: 102, heightPx: 51 } })
+    const [first] = out.match(/<w:drawing>[\s\S]*?<\/w:drawing>/g)!
+    expect(first).toContain(
+      '<wp:positionH relativeFrom="column"><wp:posOffset>19051</wp:posOffset></wp:positionH>',
+    )
+    expect(first).toContain(
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>19051</wp:posOffset></wp:positionV>',
+    )
+    expect(first).toContain('<wp:extent cx="971550" cy="485775"/>')
+  })
+
+  it('a move along one axis pins only that axis to the page', () => {
+    const out = patchHfPicturesXml(HEADER_XML, { 0: { posYPx: 60, widthPx: 100, heightPx: 50 } })
+    const [first] = out.match(/<w:drawing>[\s\S]*?<\/w:drawing>/g)!
+    expect(first).toContain(
+      '<wp:positionH relativeFrom="column"><wp:posOffset>19051</wp:posOffset></wp:positionH>',
+    )
+    expect(first).toContain(
+      '<wp:positionV relativeFrom="page"><wp:posOffset>571500</wp:posOffset></wp:positionV>',
+    )
+  })
+
+  it('an anchor without position elements gets them where the schema orders them', () => {
+    const bare = anchor(7, 0, 0).replace(/<wp:position([HV])\b[\s\S]*?<\/wp:position\1>/g, '')
+    const out = patchHfPicturesXml(bare, {
+      0: { posXPx: 10, posYPx: 20, widthPx: 100, heightPx: 50 },
+    })
+    expect(out).toContain(
+      '<wp:simplePos x="0" y="0"/>' +
+        '<wp:positionH relativeFrom="page"><wp:posOffset>95250</wp:posOffset></wp:positionH>' +
+        '<wp:positionV relativeFrom="page"><wp:posOffset>190500</wp:posOffset></wp:positionV>' +
+        '<wp:extent ',
+    )
+  })
+
+  it('a text box holding a picture is neither tagged nor patched', async () => {
+    // the lazy <w:drawing> match ends at the nested picture's </w:drawing>,
+    // where the fragment holds one pic:pic with the text box's extents
+    const textBox =
+      '<w:drawing><wp:anchor simplePos="0" relativeHeight="0" behindDoc="0" locked="0"' +
+      ' layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+      '<wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>' +
+      '<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
+      '<wp:extent cx="2857500" cy="952500"/><wp:wrapNone/><wp:docPr id="9" name="Box"/>' +
+      '<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      '<wps:wsp><wps:txbx><w:txbxContent><w:p><w:r>' +
+      anchor(10, 0, 0) +
+      '</w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic>' +
+      '</wp:anchor></w:drawing>'
+    const xml = HEADER_XML.replace(TEXT_PARA, `<w:p><w:r>${textBox}</w:r></w:p>`)
+    expect(
+      patchHfPicturesXml(xml, { 1: { posXPx: 5, posYPx: 5, widthPx: 20, heightPx: 20 } }),
+    ).toBe(xml)
+    const doc = await parseDocx(
+      await buildBannerDocx(xml.replace('xmlns:pic=', `${WPS_NS} xmlns:pic=`)),
+    )
+    expect(doc.headerImages?.map((im) => im.drawing).filter((d) => d != null)).toEqual([0, 2])
   })
 
   it('a text edit made alongside still moves the picture', async () => {

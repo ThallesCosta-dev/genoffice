@@ -5629,6 +5629,21 @@ const WP_ANCHOR = new Set(['wp:anchor'])
 /** the <w:drawing> elements of a header/footer part, in the order HfImage.drawing counts them */
 export const HF_DRAWING_RE = /<w:drawing[\s>][\s\S]*?<\/w:drawing>/g
 
+/**
+ * A HF_DRAWING_RE match the strip can move and resize: one floating picture
+ * with its own extents. A text box or group is not one, and neither is a
+ * fragment the lazy match cut at the </w:drawing> of a picture nested in a
+ * text box (its extents are the box's).
+ */
+export function hfMovablePictureFrag(frag: string): boolean {
+  return (
+    /<wp:anchor[\s>]/.test(frag) &&
+    /<a:blip[\s>]/.test(frag) &&
+    (frag.match(/<pic:pic[\s>]/g) ?? []).length === 1 &&
+    !/<(?:wps:|wpg:|w:txbxContent[\s>])/.test(frag)
+  )
+}
+
 /** wp:docPr ids of the anchored drawings in a layout-table row / on a cell-run image (binds HfImage.anchorPara) */
 const hfRowAnchorIds = new WeakMap<HfParagraph, string[]>()
 const hfImageAnchorId = new WeakMap<HfImage, string>()
@@ -6005,11 +6020,8 @@ async function hfImages(
         image.wrap = wrap === 'TopAndBottom' ? 'topBottom' : (wrap.toLowerCase() as HfImage['wrap'])
       }
       readAnchorPos(frag, image)
-      // one picture with its own extents: the strip can move and resize it
-      // (patchHfPicturesXml finds it again by this ordinal)
-      if (/<a:blip[\s>]/.test(frag) && (frag.match(/<pic:pic[\s>]/g) ?? []).length === 1) {
-        image.drawing = drawingOrdinal
-      }
+      // the strip can move and resize it (patchHfPicturesXml finds it again by this ordinal)
+      if (hfMovablePictureFrag(frag)) image.drawing = drawingOrdinal
       // inside a layout-table cell, column/margin offsets measure from that cell's text column
       if (image.posXPx != null && image.posHRel === 'margin' && onCellRun(m.index!)) {
         image.posXPx += hfCellColumnLeftPx(partXml, m.index!)

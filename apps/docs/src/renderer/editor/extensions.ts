@@ -7391,7 +7391,7 @@ export function findFloatImageAt(x: number, y: number): HTMLElement | null {
   return null
 }
 
-interface ImageParagraphAnchor {
+export interface ImageParagraphAnchor {
   pos: number
   node: PmNode
   dom: HTMLElement
@@ -7430,7 +7430,7 @@ function imageParagraphAnchors(
 }
 
 /** a page as a drop sees it (client px): its paper and its text area */
-interface ImageDropPage {
+export interface ImageDropPage {
   paperTop: number
   bodyTop: number
   bodyBottom: number
@@ -7446,7 +7446,7 @@ interface ImageDropPage {
  * what it holds); the last page has no gap below it and takes the extents of
  * the one before.
  */
-function imageDropPages(pm: HTMLElement, zoom: number): ImageDropPage[] {
+export function imageDropPages(pm: HTMLElement, zoom: number): ImageDropPage[] {
   const pages: ImageDropPage[] = []
   let paperTop = -Infinity
   let bodyTop = -Infinity
@@ -7493,7 +7493,7 @@ function imageDropPages(pm: HTMLElement, zoom: number): ImageDropPage[] {
  * top: pagination turns the page before an anchor whose picture is taller
  * than the room left (Word), which carried the picture to the next page.
  */
-function placeImageDrop(
+export function placeImageDrop(
   anchors: ImageParagraphAnchor[],
   left: number,
   top: number,

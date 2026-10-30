@@ -1536,18 +1536,21 @@ export function App() {
     setSectionHfEdits((m) => ({ ...m, [target.key]: hfTextCommit(m[target.key], next) }))
     return true
   }
-  /** a floating header picture moved or resized on section `si`'s strip (hf-float-edit) */
+  /** a floating header picture moved or resized on section `si`'s strip
+   *  (hf-float-edit); false when the strip has no part to take it */
   const commitHfPictureAt = (
     si: number,
     kind: 'header' | 'footer',
     variant: HfView,
     drawing: number,
     edit: HfPictureEdit,
-  ) => {
+  ): boolean => {
+    if (!hfCommitTarget(hfState, si, kind, variant)) return false
     setSectionHfEdits(
       (m) =>
         withHfPictureEdit({ ...hfState, edits: m }, si, kind, variant, drawing, edit)?.edits ?? m,
     )
+    return true
   }
   const setHfLink = (si: number, kind: 'header' | 'footer', variant: HfView, on: boolean) => {
     if (
